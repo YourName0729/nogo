@@ -16,6 +16,7 @@
 #include "agent.h"
 #include "episode.h"
 #include "statistics.h"
+#include "agent_factory.h"
 
 int main(int argc, const char* argv[]) {
 	std::cout << "HollowNoGo-Demo: ";
@@ -69,29 +70,33 @@ int main(int argc, const char* argv[]) {
 		if (stats.is_finished()) stats.summary();
 	}
 
-	player black("name=black " + black_args + " role=black");
-	player white("name=white " + white_args + " role=white");
+	auto black = agent_factory::produce(black_args, "black");
+	auto white = agent_factory::produce(white_args, "white");
+
+	// random_player black("name=black " + black_args + " role=black");
+	// random_player white("name=white " + white_args + " role=white");
 
 	if (!shell) { // launch standard local games
 		while (!stats.is_finished()) {
 //			std::cerr << "======== Game " << stats.step() << " ========" << std::endl;
-			black.open_episode("~:" + white.name());
-			white.open_episode(black.name() + ":~");
+			black->open_episode("~:" + white->name());
+			white->open_episode(black->name() + ":~");
 
-			stats.open_episode(black.name() + ":" + white.name());
+			stats.open_episode(black->name() + ":" + white->name());
 			episode& game = stats.back();
 			while (true) {
-				agent& who = game.take_turns(black, white);
+				agent& who = game.take_turns(*black, *white);
 				action move = who.take_action(game.state());
 //				std::cerr << game.state() << "#" << game.step() << " " << who.name() << ": " << move << std::endl;
 				if (game.apply_action(move) != true) break;
 				if (who.check_for_win(game.state())) break;
 			}
-			agent& win = game.last_turns(black, white);
+			agent& win = game.last_turns(*black, *white);
 			stats.close_episode(win.name());
 
-			black.close_episode(win.name());
-			white.close_episode(win.name());
+			black->close_episode(win.name());
+			white->close_episode(win.name());
+
 		}
 	} else { // launch GTP shell
 		for (std::string command; std::getline(std::cin, command); ) {
@@ -105,13 +110,13 @@ int main(int argc, const char* argv[]) {
 			std::string reply;
 			if (args[0] == "play" || args[0] == "genmove") { // play a move, or generate a move and play
 				if (!stats.is_episode_ongoing()) { // should open an episode
-					black.open_episode("~:" + white.name());
-					white.open_episode(black.name() + ":~");
-					stats.open_episode(black.name() + ":" + white.name());
+					black->open_episode("~:" + white->name());
+					white->open_episode(black->name() + ":~");
+					stats.open_episode(black->name() + ":" + white->name());
 				}
 
 				episode& game = stats.back();
-				agent& who = game.take_turns(black, white);
+				agent& who = game.take_turns(*black, *white);
 				if (who.role()[0] != std::tolower(args[1][0])) { // player mismatch?!
 					std::cout << "= " << "resign" << std::endl << std::endl;
 					// show the error message and terminate the shell
@@ -154,10 +159,10 @@ int main(int argc, const char* argv[]) {
 
 			} else if (args[0] == "clear_board" || args[0] == "quit") { // reset game, or quit
 				if (stats.is_episode_ongoing()) { // should close an opened episode
-					agent& win = stats.back().last_turns(black, white);
+					agent& win = stats.back().last_turns(*black, *white);
 					stats.close_episode(win.name());
-					black.close_episode(win.name());
-					white.close_episode(win.name());
+					black->close_episode(win.name());
+					white->close_episode(win.name());
 				}
 				if (args[0] == "quit") break; // quit GTP shell
 

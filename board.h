@@ -172,46 +172,55 @@ public:
 		return liberty;
 	}
 
-	void transpose() {
-		for (int x = 0; x < size_x; x++) {
-			for (int y = x + 1; y < size_y; y++) {
-				std::swap(stone[x][y], stone[y][x]);
+	// void transpose() {
+	// 	for (int x = 0; x < size_x; x++) {
+	// 		for (int y = x + 1; y < size_y; y++) {
+	// 			std::swap(stone[x][y], stone[y][x]);
+	// 		}
+	// 	}
+	// }
+
+	// void reflect_horizontal() {
+	// 	for (int y = 0; y < size_y; y++) {
+	// 		for (int x = 0; x < size_x / 2; x++) {
+	// 			std::swap(stone[x][y], stone[size_x - 1 - x][y]);
+	// 		}
+	// 	}
+	// }
+
+	// void reflect_vertical() {
+	// 	for (int x = 0; x < size_x; x++) {
+	// 		for (int y = 0; y < size_y / 2; y++) {
+	// 			std::swap(stone[x][y], stone[x][size_y - 1 - y]);
+	// 		}
+	// 	}
+	// }
+
+	// /**
+	//  * rotate the board clockwise by given times
+	//  */
+	// void rotate(int r = 1) {
+	// 	switch (((r % 4) + 4) % 4) {
+	// 	default:
+	// 	case 0: break;
+	// 	case 1: rotate_right(); break;
+	// 	case 2: reverse(); break;
+	// 	case 3: rotate_left(); break;
+	// 	}
+	// }
+
+	// void rotate_right() { transpose(); reflect_vertical(); } // clockwise
+	// void rotate_left() { transpose(); reflect_horizontal(); } // counterclockwise
+	// void reverse() { reflect_horizontal(); reflect_vertical(); }
+public:
+	void show() const {
+		for (unsigned int i = 0; i < size_x; ++i) {
+			for (unsigned int j = 0; j < size_y; ++j) {
+				std::cout << (".Ox "[stone[i][j]]) << ' ';
 			}
+			std::cout << '\n';
 		}
 	}
-
-	void reflect_horizontal() {
-		for (int y = 0; y < size_y; y++) {
-			for (int x = 0; x < size_x / 2; x++) {
-				std::swap(stone[x][y], stone[size_x - 1 - x][y]);
-			}
-		}
-	}
-
-	void reflect_vertical() {
-		for (int x = 0; x < size_x; x++) {
-			for (int y = 0; y < size_y / 2; y++) {
-				std::swap(stone[x][y], stone[x][size_y - 1 - y]);
-			}
-		}
-	}
-
-	/**
-	 * rotate the board clockwise by given times
-	 */
-	void rotate(int r = 1) {
-		switch (((r % 4) + 4) % 4) {
-		default:
-		case 0: break;
-		case 1: rotate_right(); break;
-		case 2: reverse(); break;
-		case 3: rotate_left(); break;
-		}
-	}
-
-	void rotate_right() { transpose(); reflect_vertical(); } // clockwise
-	void rotate_left() { transpose(); reflect_horizontal(); } // counterclockwise
-	void reverse() { reflect_horizontal(); reflect_vertical(); }
 
 public:
 	friend std::ostream& operator <<(std::ostream& out, const board& b) {
