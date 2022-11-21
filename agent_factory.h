@@ -3,6 +3,8 @@
 #include <memory>
 #include <sstream>
 #include "agent.h"
+#include "mcts.h"
+#include "ntuple.h"
 
 class agent_factory {
 public:
@@ -20,6 +22,7 @@ public:
         if (name == "random") return std::make_shared<random_player>(oargs);
         if (name == "mcts") return std::make_shared<mcts>(oargs);
         if (name == "monkey") return std::make_shared<monkey>(oargs);
+        if (name == "tuple3x3") return std::make_shared<tuple3x3>(oargs);
 
         return std::make_shared<random_player>(oargs);
     }
