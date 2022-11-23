@@ -13,7 +13,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
-#include "board.h"
+// #include "board.h"
 #include "action.h"
 
 class agent {
@@ -80,18 +80,27 @@ public:
 		if (role() == "white") who = board::white;
 		if (who == board::empty)
 			throw std::invalid_argument("invalid role: " + role());
-		for (size_t i = 0; i < space.size(); i++)
-			space[i] = action::place(i, who);
+		// for (size_t i = 0; i < space.size(); i++)
+		// 	space[i] = action::place(i, who);
 	}
 
 	virtual action take_action(const board& state) override {
-		std::shuffle(space.begin(), space.end(), engine);
-		for (const action::place& move : space) {
-			board after = state;
-			if (move.apply(after) == board::legal)
-				return move;
+		uint128 avl = state.available(who);
+		int bc = board::bit_count(avl);
+		if (!bc) return action();
+		std::uniform_int_distribution<int> dis(0, bc - 1);
+		int idx = dis(engine);
+		while (idx--) {
+			avl = board::reset(avl);
 		}
-		return action();
+		return action::place(board::bit_scan(board::lsb(avl)), who);
+		// std::shuffle(space.begin(), space.end(), engine);
+		// for (const action::place& move : space) {
+		// 	board after = state;
+		// 	if (move.apply(after) == board::legal)
+		// 		return move;
+		// }
+		// return action();
 	}
 
 private:
