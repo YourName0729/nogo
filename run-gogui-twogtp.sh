@@ -1,8 +1,8 @@
 #!/bin/bash
 echo "GoGui-TwoGTP Launcher V20221101"
 # commands for player 1
-P1B='./nogo --shell --name="mcts" --black="name=mcts c=1.5"'
-P1W='./nogo --shell --name="mcts" --white="name=mcts c=1.5"'
+P1B='./nogo --shell --name="mcts" --black="name=mcts T=60000 c=1.5"'
+P1W='./nogo --shell --name="mcts" --white="name=mcts T=60000 c=1.5"'
 # P1B='./nogo --shell --name="mcts" --black="name=random"'
 # P1W='./nogo --shell --name="mcts" --white="name=random"'
 # commands for local player 2

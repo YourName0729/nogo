@@ -44,6 +44,9 @@ private:
 	using mnpair_ptr = std::vector<mnpair>::iterator;
 
 public:
+	virtual void close_episode(const std::string& flag = "") override {
+	    round = 0;
+	}
 	// virtual void close_episode(const std::string& flag = "") override {
 	// 	std::cout << cnt << " moves in " << telp << " ms\n";
 	// 	telp = 0;
@@ -145,7 +148,8 @@ public:
 		node* root = nullptr;
 		// auto begin = std::chrono::steady_clock::now();
 		// int i = 0, T = 100;
-		int t = T;
+		int t = T * static_cast<int>(- round / 40 + 1);
+		++round;
 		do {
 			node** cur = &root;
 			std::vector<mnpair_ptr> ancs;
@@ -215,4 +219,5 @@ private:
 	int T;
 	float c, k;
 	random_player sim[3];
+	int round = 1;
 };
