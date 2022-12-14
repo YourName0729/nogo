@@ -3,12 +3,13 @@
 #include <chrono>
 #include <thread>
 #include <unordered_set>
+#include <thread>
+
 #include "agent.h"
 
 class mcts : public agent {
 public:
-	mcts(const std::string& args = "") : agent("name=mcts role=unknown " + args), who(board::empty), T(100000), c(1.5), k(10),
-		sim{random_player("name=white role=white"), random_player("name=black role=black"), random_player("name=white role=white")} {
+	mcts(const std::string& args = "") : agent("name=mcts role=unknown " + args), who(board::empty), T(100000), c(1.5), k(10), thread(1), demo(false) {
 		if (name().find_first_of("[]():; ") != std::string::npos)
 			throw std::invalid_argument("invalid name: " + name());
 		if (role() == "black") who = board::black;
@@ -18,6 +19,12 @@ public:
 		if (meta.find("T") != meta.end()) T = static_cast<int>(meta["T"]);
 		if (meta.find("c") != meta.end()) c = static_cast<float>(meta["c"]);
 		if (meta.find("k") != meta.end()) k = static_cast<float>(meta["k"]);
+		if (meta.find("thread") != meta.end()) thread = static_cast<unsigned>(meta["thread"]);
+		if (meta.find("demo") != meta.end()) demo = true;
+
+		for (unsigned i = 0; i < thread; ++i) {
+			sims.push_back({random_player("name=white role=white"), random_player("name=black role=black"), random_player("name=white role=white")});
+		}
 	}
 
 private:
@@ -46,6 +53,11 @@ private:
 public:
 	virtual void close_episode(const std::string& flag = "") override {
 	    round = 0;
+		if (demo) {
+			std::cout << name() << " do " << cnt << " moves in " << telp << " ms\n";
+			telp = 0;
+			cnt = 0;	
+		}
 	}
 	// virtual void close_episode(const std::string& flag = "") override {
 	// 	std::cout << cnt << " moves in " << telp << " ms\n";
@@ -97,7 +109,7 @@ public:
 		return vec.end();
 	}
 
-	board::piece_type simulation(const board& state, action_set& rave) {
+	board::piece_type simulation(const board& state, action_set& rave, std::vector<random_player>& sim) {
 		// std::cout << "simulation\n";
 		// random simulation, return the win
 		board after = state;
@@ -141,17 +153,10 @@ public:
 		if (ancs.size()) update_rave(root, ancs.front()->second);
 	}
 
-	virtual action take_action(const board& state) override {
-		// std::cout << role() << " take action\n";
-		// state.show();
-		// ++cnt;
-		node* root = nullptr;
-		// auto begin = std::chrono::steady_clock::now();
-		// int i = 0, T = 100;
+	void mcts_tree(unsigned id, const board& state, std::vector<random_player>& sim) {
 		int t = T * static_cast<int>(- round / 40 + 1);
-		++round;
 		do {
-			node** cur = &root;
+			node** cur = &roots[id];
 			std::vector<mnpair_ptr> ancs;
 			board::piece_type rl = who;
 			board after = state;
@@ -175,7 +180,7 @@ public:
 				// cur is a termminal node (lose)
 				ancs.pop_back();
 				action_set rave;
-				backtrack(rl != who, ancs, rave, root);
+				backtrack(rl != who, ancs, rave, roots[id]);
 				continue;
 			}
 			
@@ -183,41 +188,123 @@ public:
 			make_node(cur, after, rl);
 			// simulation from cur
 			action_set rave;
-			auto win = simulation(after, rave);
+			auto win = simulation(after, rave, sim);
 			// if (win == who) std::cout << "root win!\n";
 			// else std::cout << "root loses...\n";
-			backtrack(win == who, ancs, rave, root);	
+			backtrack(win == who, ancs, rave, roots[id]);	
 		} while (--t);
+	}
 
-		// auto ed = std::chrono::steady_clock::now();
-		// telp += std::chrono::duration_cast<std::chrono::milliseconds>(ed - begin).count();
-
-		auto mx = std::max_element(root->chs.begin(), root->chs.end(), [](const mnpair& a, const mnpair& b) {
-			if (a.second == nullptr) return true; // a < b
-			if (b.second == nullptr) return false; // b < a
-			return a.second->n < b.second->n;
-		});
-		if (mx == root->chs.end() || mx->second == nullptr) {
-			delete_node(root);
-			return action();
+	virtual action take_action(const board& state) override {
+		// std::cout << role() << " take action\n";
+		// state.show();
+		std::chrono::steady_clock::time_point begin;
+		if (demo) {
+			++cnt;	
+			begin = std::chrono::steady_clock::now();
 		}
+		
+		// node* root = nullptr;
+		
+		// // int i = 0, T = 100;
+		// int t = T * static_cast<int>(- round / 40 + 1);
+		// ++round;, {random_player("name=white role=white"), random_player("name=black role=black"), random_player("name=white role=white")}
+		// do {
+		// 	node** cur = &root;
+		// 	std::vector<mnpair_ptr> ancs;
+		// 	board::piece_type rl = who;
+		// 	board after = state;
+		// 	// std::string path = ">";
+		// 	while ((*cur) != nullptr) {
+		// 		// std::cout << "dep\n";
+		// 		// find a best child
+		// 		// std::cout << path << " " << (*cur)->n << ' ' << (*cur)->q << '\n';
+		// 		// path += '>';
+		// 		auto br = branch(*cur, rl);
+		// 		ancs.push_back(br);
+		// 		if (br == (*cur)->chs.end()) break;
+		// 		cur = &br->second;
+		// 		rl = switch_role(rl);
+		// 		br->first.apply(after);
+		// 	}
+		// 	// std::cout << path << '\n';
+
+		// 	if (*cur != nullptr) {
+		// 		// std::cout << "terminal node\n";
+		// 		// cur is a termminal node (lose)
+		// 		ancs.pop_back();
+		// 		action_set rave;
+		// 		backtrack(rl != who, ancs, rave, root);
+		// 		continue;
+		// 	}
+
+		roots.resize(thread);
+		std::fill(roots.begin(), roots.end(), nullptr);
+		
+		std::vector<std::thread> thrs;
+		for (unsigned i = 0; i < thread; ++i) {
+			thrs.push_back(std::thread(&mcts::mcts_tree, this, i, std::ref(state), std::ref(sims[i])));
+		}
+		for (unsigned i = 0; i < thread; ++i) {
+			thrs[i].join();
+		}
+			
+		// 	// create node for cur
+		// 	make_node(cur, after, rl);
+		// 	// simulation from cur
+		// 	action_set rave;
+		// 	auto win = simulation(after, rave);
+		// 	// if (win == who) std::cout << "root win!\n";
+		// 	// else std::cout << "root loses...\n";
+		// 	backtrack(win == who, ancs, rave, root);	
+		// } while (--t);
+
+		
+		
+		std::unordered_map<action::place, float, hasher> mp;
+		for (unsigned i = 0; i < thread; ++i) {
+			for (auto& [mv, ch] : roots[i]->chs) {
+				if (ch != nullptr) mp[mv] += ch->n;
+			}
+		}
+		std::vector<std::pair<action::place, float>> stat;
+		for (auto& [mv, cnt] : mp) {
+			stat.push_back({mv, cnt});
+		}
+		for (unsigned i = 0; i < thread; ++i) delete_node(roots[i]);
+		
+		if (demo) {
+			auto ed = std::chrono::steady_clock::now();
+			telp += std::chrono::duration_cast<std::chrono::milliseconds>(ed - begin).count();	
+		}
+		
+
+		if (stat.empty()) return action();
+
+		auto mx = std::max_element(stat.begin(), stat.end(), [](const std::pair<action::place, float>& a, const std::pair<action::place, float>& b) {
+			return a.second < b.second;
+		});
 		// std::cout << "my action is " << mx->first.position() << ' ' << mx->second->q << ' ' << mx->second->n << '\n';
 		// board tmp = state;
 		// mx->first.apply(tmp);
 		// tmp.show();
 		// std::this_thread::sleep_for(std::chrono::seconds(1));
-		auto mv = mx->first;
-		delete_node(root);
 		// std::cout << (" BW"[(int)who]) << " -> " << mx->first.position() << '\n';
-		return mv;
+		return mx->first;
 	}
 
 private:
-	// long long telp = 0;
-	// int cnt = 0;
+	long long telp = 0;
+	int cnt = 0;
 	board::piece_type who;
 	int T;
 	float c, k;
-	random_player sim[3];
+	unsigned thread;
+	bool demo;
+
+	std::vector<std::vector<random_player>> sims;
+	// random_player sim[3];
+	std::vector<node*> roots;
+	
 	int round = 1;
 };
