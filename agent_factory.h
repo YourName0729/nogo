@@ -18,7 +18,7 @@ public:
             else nargs += key + '=' + value + ' ';
 		}
 
-        std::string oargs = "name=" + role + " " + nargs + " role=" + role;
+        std::string oargs = "name=" + role + " " + nargs + "role=" + role;
         if (name == "random") return std::make_shared<random_player>(oargs);
         if (name == "mcts") return std::make_shared<mcts>(oargs);
         if (name == "monkey") return std::make_shared<monkey>(oargs);

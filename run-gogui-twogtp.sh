@@ -1,10 +1,12 @@
 #!/bin/bash
 echo "GoGui-TwoGTP Launcher V20221101"
 # commands for player 1
-P1B='./nogo --shell --name="mcts" --black="name=mcts thread=4 T=60000 c=0.1"'
-P1W='./nogo --shell --name="mcts" --white="name=mcts thread=4 T=60000 c=0.1"'
+# P1B='./nogo --shell --name="mcts" --black="name=mcts thread=4 T=60000 c=0.1"'
+# P1W='./nogo --shell --name="mcts" --white="name=mcts thread=4 T=60000 c=0.1"'
 # P1B='./nogo --shell --name="mcts" --black="name=random"'
 # P1W='./nogo --shell --name="mcts" --white="name=random"'
+P1B='./nogo --shell --name="mcts" --black="name=mcts thread=1 c=0.3 k=200 T=10000"'
+P1W='./nogo --shell --name="mcts" --white="name=mcts thread=1 c=0.3 k=200 T=10000"'
 # commands for local player 2
 P2B='./nogo-judge --shell --name="Judge-Weak-Black" --black="strong"'
 P2W='./nogo-judge --shell --name="Judge-Weak-White" --white="strong"'

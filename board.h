@@ -17,6 +17,7 @@
 #include <cmath>
 #include <random>
 #include <queue>
+#include <optional>
 #include "uint128.h"
 
 /**
@@ -271,6 +272,15 @@ public:
 
 	}
 
+	// index of move
+	std::optional<int> random_action(std::default_random_engine& gen) {
+		auto av = avl[info().who_take_turns];
+		if (!av) return std::nullopt;
+		auto idx = std::uniform_int_distribution<>(0, bit_count(av) - 1)(gen);
+		while (idx--) av = reset(av);
+		return bit_scan(lsb(av));
+	}
+
 	/**
 	 * place a stone to the specific position
 	 * who == piece_type::unknown indicates automatically play as the next side
@@ -322,6 +332,10 @@ public:
 		return nogo_move_result::legal;
 	}
 
+	reward place(int i, unsigned who = piece_type::unknown) {
+		return place(point(i), who);
+	}
+
 	reward place(int x, int y, unsigned who = piece_type::unknown) {
 		bitboard bb = 1;
 		bb <<= (x * size_y + y);
@@ -333,11 +347,20 @@ public:
 		return place(p.x, p.y, who);
 	}
 
+	uint128 available() const { return avl[info().who_take_turns]; }
+
 	uint128 available(unsigned who) const {
 		return avl[who];
 	}
 
+	uint128 find_move(const board& b) const {
+		auto who = info().who_take_turns;
+		return b.brds[who] ^ brds[who];
+	}
 
+	int find_move_index(const board& b) const {
+		return bit_scan(find_move(b));
+	}
 
 	/**
 	 * calculate the liberty of the block of piece at [x][y]
@@ -592,6 +615,8 @@ public:
 	// }
 
 public:
+	
+
 	friend std::ostream& operator <<(std::ostream& out, const board& b) {
 		std::cout << "outputboard\n";
 		std::ios ff(nullptr);

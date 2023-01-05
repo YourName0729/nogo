@@ -4,307 +4,341 @@
 #include <thread>
 #include <unordered_set>
 #include <thread>
+#include <string_view>
+#include <memory>
 
 #include "agent.h"
 
+// #define DEMO
+
 class mcts : public agent {
 public:
-	mcts(const std::string& args = "") : agent("name=mcts role=unknown " + args), who(board::empty), T(100000), c(1.5), k(10), thread(1), demo(false) {
-		if (name().find_first_of("[]():; ") != std::string::npos)
-			throw std::invalid_argument("invalid name: " + name());
-		if (role() == "black") who = board::black;
-		if (role() == "white") who = board::white;
-		if (who == board::empty)
-			throw std::invalid_argument("invalid role: " + role());
-		if (meta.find("T") != meta.end()) T = static_cast<int>(meta["T"]);
-		if (meta.find("c") != meta.end()) c = static_cast<float>(meta["c"]);
-		if (meta.find("k") != meta.end()) k = static_cast<float>(meta["k"]);
-		if (meta.find("thread") != meta.end()) thread = static_cast<unsigned>(meta["thread"]);
+	mcts(const std::string& args = "") : agent("role=unknown " + args + " name=mcts") {
+		assign("thread_size", thread_size);
+		assign("c", c);
+		assign("T", T);
+		assign("k", k);
 		if (meta.find("demo") != meta.end()) demo = true;
+		if (meta.find("time") != meta.end()) time = true;
 
-		for (unsigned i = 0; i < thread; ++i) {
-			sims.push_back({random_player("name=white role=white"), random_player("name=black role=black"), random_player("name=white role=white")});
-		}
+
+		/*
+			initializa parellel objects
+		*/
+		gens.resize(thread_size);
+		std::random_device rd;
+		for (auto& gen : gens) gen.seed(rd());
+		// std::generate(gens.begin(), gens.end(), []() {
+		// 	return std::default_random_engine();
+		// });
+
+		bufs.resize(thread_size);
+		for (auto& buf : bufs) buf.reserve(40 * T);
+		buf_roots.reserve(40);
 	}
 
-private:
-	struct node {
-		node() : q(0), n(1e-6), qs(0), ns(1e-6) {}
-		float q, n, qs, ns;
-		std::vector<std::pair<action::place, node*>> chs;
-	};
+protected:
+	class node : public board {
+	public:
+		node(const board& state) : board(state), child(bit_count(state.available()), nullptr) {}
 
-	struct hasher {
-		std::size_t operator()(const action::place& mv) const {
-			return static_cast<unsigned>(mv);
-		}
-	};
+		using rave_array = std::array<std::array<bool, 81>, 2>;
 
-	struct equaler {
-		bool operator()(const action::place& a, const action::place& b) const {
-			return static_cast<unsigned>(a) == static_cast<unsigned>(b);
-		}
-	};
-
-	using action_set = std::unordered_set<action::place, hasher, equaler>;
-	using mnpair = std::pair<action::place, node*>;
-	using mnpair_ptr = std::vector<mnpair>::iterator;
-
-public:
-	virtual void close_episode(const std::string& flag = "") override {
-	    round = 0;
-		if (demo) {
-			std::cout << name() << " do " << cnt << " moves in " << telp << " ms\n";
-			telp = 0;
-			cnt = 0;	
-		}
-	}
-	// virtual void close_episode(const std::string& flag = "") override {
-	// 	std::cout << cnt << " moves in " << telp << " ms\n";
-	// 	telp = 0;
-	// 	cnt = 0;
-	// }
-
-	void make_node(node** cur, const board& state, board::piece_type rl) {
-		// std::cout << "make node\n";
-		*cur = new node();
-		for (unsigned int i = 0; i < board::size_x * board::size_y; ++i) {
-			action::place mv = action::place(i, rl);
-			board after = state;
-			if (mv.apply(after) == board::legal) (*cur)->chs.emplace_back(mv, nullptr);
-		}
-	}
-
-	void delete_node(node* cur) {
-		for (auto& [mv, nd] : cur->chs) if (nd != nullptr) delete_node(nd);
-		delete cur;
-	}
-
-	inline board::piece_type switch_role(board::piece_type r) const {
-		return static_cast<board::piece_type>(static_cast<unsigned int>(r) ^ 3u);
-	}
-
-	mnpair_ptr branch(node* cur, board::piece_type rl) {
-		// std::cout << "branch\n";
-		auto& vec = cur->chs;
-		if (vec.empty()) return vec.end();
-		float scl = (rl == who)? 1.f : -1.f;
-
-		// find maximum
-		float mx = -1e9;
-		auto mxnd = vec.begin();
-		for (auto it = vec.begin(); it != vec.end(); it++) {
-			node* nd = it->second;
-			if (it->second == nullptr) return it;
-			float beta = std::sqrt(k / (nd->n + k));
-			
-			// float score = scl * ((1 - beta) * nd->q + beta * nd->qs) + c * std::sqrt(std::log(cur->n) / nd->n);
-			float v = nd->q * (1 - nd->q) + std::sqrt(2 * std::log(cur->n) / nd->n);
-			float score = scl * ((1 - beta) * nd->q + beta * nd->qs) + c * std::sqrt(std::log(cur->n) / nd->n * std::min(0.75f, v));
-			// float score = scl * (nd->q) + std::sqrt(std::log(cur->n) / nd->n);
-			if (mx == -1e9 || mx < score) mx = score, mxnd = it;
-		}
-		return mxnd;
-
-		return vec.end();
-	}
-
-	board::piece_type simulation(const board& state, action_set& rave, std::vector<random_player>& sim) {
-		// std::cout << "simulation\n";
-		// random simulation, return the win
-		board after = state;
-		action::place mv;
-		board::piece_type rl;
-		do {
-			rl = after.info().who_take_turns;
-			mv = sim[static_cast<unsigned>(rl)].take_action(after);
-			//if (rl == who) ++rave[mv];
-			rave.insert(mv);
-		} while (mv.apply(after) == board::legal);
-		// after.info().who_take_turns loses
-		return switch_role(after.info().who_take_turns);
-	}
-
-	void backtrack(float win, const std::vector<mnpair_ptr>& ancs, action_set& rave, node* root) {
-		// std::cout << "backtrack\n";
-		auto update_rave = [&](node* cur, node* avd) {
-			for (auto [mv, nd] : cur->chs) {
-				if (nd != nullptr && nd != avd && rave.find(mv) != rave.end()) {
-					// nd->ns += rave[mv];
-					// nd->qs += rave[mv] * (win - nd->qs) / nd->ns;
-					nd->ns += 1.0f;
-					nd->qs += (win - nd->qs) / nd->ns;
+	public:
+		/*
+			return the nullptr node to expend 
+			return std::nullopt if all children are visited
+		*/
+		std::optional<node*> expend(std::vector<node>& buf) {
+			#ifdef DEMO
+			std::cout << "expend\n";
+			#endif
+			auto av = available();
+			for (auto i = 0u; i < child.size(); ++i, av = reset(av)) {
+				if (child[i] == nullptr) {
+					board brd = *this;
+					brd.place(lsb(av));
+					buf.push_back(node(brd));
+					return child[i] = &buf.back();
 				}
 			}
-		};
+			return std::nullopt;
+		}
 
-		for (const auto& ptr : ancs) {
-			auto cur = ptr->second;
-			++cur->n;
-			cur->q += (win - cur->q) / cur->n;
+		bool proceedable() const {
+			return child.size() != 0;
 		}
-		++root->n;
-		root->q += (win - root->q) / root->n;
-		for (int i = static_cast<int>(ancs.size()) - 2; i >= 0; --i) {
-			update_rave(ancs[i]->second, ancs[i + 1]->second);
-			// ++rave[ancs[i + 1]->first];
-			rave.insert(ancs[i + 1]->first);
+
+		bool fully_visited() const {
+			return child.back() != nullptr;
 		}
-		if (ancs.size()) update_rave(root, ancs.front()->second);
+
+		node* select(float c = 0.1, float k = 10.0) {
+			#ifdef DEMO
+			auto res = std::max_element(child.begin(), child.end(), [&](node* a, node* b) {
+				return a->score(visit, c, k) < b->score(visit, c, k);
+			});
+			std::cout << (info().who_take_turns > 1? "white" : "black");
+			std::cout << "\t" << std::distance(child.begin(), res) << '\t' << (*res)->visit << '\t' << float((*res)->win) / (*res)->visit << '\n';
+			#endif
+			return *std::max_element(child.begin(), child.end(), [&](node* a, node* b) {
+				return a->score(visit, c, k) < b->score(visit, c, k);
+			});
+		}
+
+		float score(int par_visit, float c = 0.1, float k = 10.0) const {
+			float exploit = float(win) / visit;
+			float rave_exploit = float(rave_win) / rave_visit;
+			float beta = std::sqrt(k / (par_visit + k));
+			float explore = std::sqrt(std::log(par_visit) / visit);
+			// return -exploit + c * explore; 
+			return (beta - 1) * exploit - beta * rave_exploit + c * explore;
+		}
+
+		action find_best() const {
+			auto best = std::max_element(child.begin(), child.end(), [](node* a, node* b) {
+				if (a == nullptr) return true;
+				if (b == nullptr) return false;
+				return a->visit < b->visit;
+			});
+			if (best == child.end()) return action();
+			#ifdef DEMO
+			std::cout << bit_scan(find_move(**best)) << ' ' << (*best)->visit << ' ' << float((*best)->win) / (*best)->visit << '\n';
+			#endif
+			return action::place(bit_scan(find_move(**best)), info().who_take_turns);
+		}
+
+		board::piece_type simulate(std::default_random_engine& gen, rave_array& ra) const {
+			board brd = *this;
+			while (auto mv = brd.random_action(gen)) {
+				ra[brd.info().who_take_turns - 1][*mv] = true;
+				brd.place(*mv);
+			}
+			// #ifdef DEMO
+			// std::cout << (brd.info().who_take_turns == board::white? "black" : "white") << " wins\n";
+			// #endif
+			return brd.info().who_take_turns == board::white? board::black : board::white;
+		}
+
+	public:
+		int win = 0, visit = 0;
+		int rave_win = 0, rave_visit = 0;
+		std::vector<node*> child;
+	};
+
+	class tree {
+	public:
+		tree() = default;
+		tree(const board& state) : root(new node(state)) {}
+
+		tree& operator=(const tree& t) { root = t.root; return *this; }
+
+	public:
+		void run_mcts(std::size_t N, std::default_random_engine& gen, std::vector<node>& buf, float c, float k) {
+			#ifdef DEMO
+			std::cout << "run mcts" << '\n';
+			#endif
+			for (auto i = 0u; i < N; ++i) {
+				auto path{select_expend(buf, c, k)};
+				node::rave_array ra;
+				update(path, path.back()->simulate(gen, ra), ra);
+			}
+			// #ifdef DEMO
+			// std::cout << "size: " << size() << '\n';
+			// #endif
+			// return root->find_best();
+		}
+
+		bool empty() const {
+			return root == nullptr;
+		}
+
+	public:
+		void initialze(const board& state, std::vector<node>& buf) {
+			buf.push_back(node(state));
+			root = &buf.back();
+		}
+
+		void clear() { root = nullptr; }
+
+		bool move(const board& state) {
+			// std::cout << "start move\n";
+			for (auto i = 0u; i < root->child.size(); ++i) {
+				auto ch = root->child[i];
+				if (ch == nullptr) continue;
+				for (auto j = 0u; j < ch->child.size(); ++j) {
+					auto ch2 = ch->child[j];
+					if (ch2 == nullptr) continue;
+					if (static_cast<board>(*ch2) == state) {
+						root = ch2;
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		// #ifdef DEMO
+		// int size(node* nd) const {
+		// 	int re = 0;
+		// 	for (auto& ch : nd->child) if (ch != nullptr) re += size(ch);
+		// 	return re + 1;
+		// }
+		// int size() const {
+		// 	return size(root);
+		// }
+		// #endif
+
+		// void plot(node* nd, int sp) {
+		// 	std::cout << "plot" << std::endl;
+		// 	std::cout << "> ";
+		// 	for (auto i = 0; i < sp; ++i) std::cout << "    ";
+		// 	std::cout << nd->win << ' ' << nd->visit << '\n';
+		// 	for (auto& ch : nd->child) if (ch != nullptr) plot(ch, sp + 1);
+		// }
+
+	protected:
+		std::vector<node*> select_expend(std::vector<node>& buf, float c = 0.05, float k = 10.0) {
+			#ifdef DEMO
+			std::cout << "select and expend" << '\n';
+			#endif
+			std::vector<node*> path = {root};
+			++root->visit;
+			while (path.back()->proceedable() && path.back()->fully_visited()) {
+				auto nd = path.back()->select(c, k);
+				path.push_back(nd);
+				/*
+					virtual loss
+				*/
+				++nd->visit;
+				++nd->rave_visit;
+			}
+			// #ifdef DEMO
+			// if (auto res = path.back()->expend()) std::cout << "can expend" << '\n';
+			// else std::cout << "can't expend" << '\n';
+			// #endif
+			if (auto res = path.back()->expend(buf)) path.push_back(*res), ++(*res)->visit;
+			// else path.back() is a terminal node
+
+			return path;
+		}
+
+		void update(std::vector<node*>& path, board::piece_type win, node::rave_array& ra) {
+			#ifdef DEMO
+			std::cout << "update" << '\n';
+			#endif
+			auto who = root->info().who_take_turns;
+			for (auto& nd : path) {
+				/*
+					mornal update
+				*/
+				auto ndwho = nd->info().who_take_turns;
+				if (win == who && ndwho == who)      ++nd->win, ++nd->rave_win;
+				else if (win != who && ndwho != who) ++nd->win, ++nd->rave_win;
+
+				/*
+					rave update
+				*/
+				for (auto& ch : nd->child) {
+					if (ch == nullptr) continue;
+					auto chwho = ch->info().who_take_turns;
+					if (ra[chwho - 1][nd->find_move_index(*ch)]) {
+						if (win == who && chwho == who)      ++ch->rave_win;
+						else if (win != who && ndwho != who) ++ch->rave_win;
+						++ch->rave_visit;
+					}
+				} 
+			}
+		}
+
+	public:
+		node* root = nullptr;
+	};
+
+protected:
+	template<typename T>
+	bool assign(const std::string& name, T& buf) {
+		auto b = meta.find(name) != meta.end();
+		if (b) buf = meta[name];
+		return b;
 	}
 
-	void mcts_tree(unsigned id, const board& state, std::vector<random_player>& sim) {
-		int t = T * static_cast<int>(- round / 40 + 1);
-		do {
-			node** cur = &roots[id];
-			std::vector<mnpair_ptr> ancs;
-			board::piece_type rl = who;
-			board after = state;
-			// std::string path = ">";
-			while ((*cur) != nullptr) {
-				// std::cout << "dep\n";
-				// find a best child
-				// std::cout << path << " " << (*cur)->n << ' ' << (*cur)->q << '\n';
-				// path += '>';
-				auto br = branch(*cur, rl);
-				ancs.push_back(br);
-				if (br == (*cur)->chs.end()) break;
-				cur = &br->second;
-				rl = switch_role(rl);
-				br->first.apply(after);
-			}
-			// std::cout << path << '\n';
-
-			if (*cur != nullptr) {
-				// std::cout << "terminal node\n";
-				// cur is a termminal node (lose)
-				ancs.pop_back();
-				action_set rave;
-				backtrack(rl != who, ancs, rave, roots[id]);
-				continue;
-			}
-			
-			// create node for cur
-			make_node(cur, after, rl);
-			// simulation from cur
-			action_set rave;
-			auto win = simulation(after, rave, sim);
-			// if (win == who) std::cout << "root win!\n";
-			// else std::cout << "root loses...\n";
-			backtrack(win == who, ancs, rave, roots[id]);	
-		} while (--t);
-	}
-
-	virtual action take_action(const board& state) override {
-		// std::cout << role() << " take action\n";
-		// state.show();
+public:
+	action take_action(const board& state) override {
 		std::chrono::steady_clock::time_point begin;
-		if (demo) {
-			++cnt;	
+		if (time) {
 			begin = std::chrono::steady_clock::now();
+			++move_count;
 		}
-		
-		// node* root = nullptr;
-		
-		// // int i = 0, T = 100;
-		// int t = T * static_cast<int>(- round / 40 + 1);
-		// ++round;, {random_player("name=white role=white"), random_player("name=black role=black"), random_player("name=white role=white")}
-		// do {
-		// 	node** cur = &root;
-		// 	std::vector<mnpair_ptr> ancs;
-		// 	board::piece_type rl = who;
-		// 	board after = state;
-		// 	// std::string path = ">";
-		// 	while ((*cur) != nullptr) {
-		// 		// std::cout << "dep\n";
-		// 		// find a best child
-		// 		// std::cout << path << " " << (*cur)->n << ' ' << (*cur)->q << '\n';
-		// 		// path += '>';
-		// 		auto br = branch(*cur, rl);
-		// 		ancs.push_back(br);
-		// 		if (br == (*cur)->chs.end()) break;
-		// 		cur = &br->second;
-		// 		rl = switch_role(rl);
-		// 		br->first.apply(after);
-		// 	}
-		// 	// std::cout << path << '\n';
 
-		// 	if (*cur != nullptr) {
-		// 		// std::cout << "terminal node\n";
-		// 		// cur is a termminal node (lose)
-		// 		ancs.pop_back();
-		// 		action_set rave;
-		// 		backtrack(rl != who, ancs, rave, root);
-		// 		continue;
-		// 	}
+		if (tre.empty()) tre.initialze(state, buf_roots);
+		else if (!tre.move(state)) tre.initialze(state, buf_roots);
 
-		roots.resize(thread);
-		std::fill(roots.begin(), roots.end(), nullptr);
-		
 		std::vector<std::thread> thrs;
-		for (unsigned i = 0; i < thread; ++i) {
-			thrs.push_back(std::thread(&mcts::mcts_tree, this, i, std::ref(state), std::ref(sims[i])));
+		for (auto i = 0u; i < thread_size; ++i) {
+			thrs.push_back(std::thread(&tree::run_mcts, tre, T, std::ref(gens[i]), std::ref(bufs[i]), c, k));
 		}
-		for (unsigned i = 0; i < thread; ++i) {
-			thrs[i].join();
-		}
-			
-		// 	// create node for cur
-		// 	make_node(cur, after, rl);
-		// 	// simulation from cur
-		// 	action_set rave;
-		// 	auto win = simulation(after, rave);
-		// 	// if (win == who) std::cout << "root win!\n";
-		// 	// else std::cout << "root loses...\n";
-		// 	backtrack(win == who, ancs, rave, root);	
-		// } while (--t);
+		for (auto& thr : thrs) thr.join();
+		auto re = tre.root->find_best();
 
-		
-		
-		std::unordered_map<action::place, float, hasher> mp;
-		for (unsigned i = 0; i < thread; ++i) {
-			for (auto& [mv, ch] : roots[i]->chs) {
-				if (ch != nullptr) mp[mv] += ch->n;
-			}
+		if (time) {
+			auto end = std::chrono::steady_clock::now();
+			time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
 		}
-		std::vector<std::pair<action::place, float>> stat;
-		for (auto& [mv, cnt] : mp) {
-			stat.push_back({mv, cnt});
-		}
-		for (unsigned i = 0; i < thread; ++i) delete_node(roots[i]);
-		
-		if (demo) {
-			auto ed = std::chrono::steady_clock::now();
-			telp += std::chrono::duration_cast<std::chrono::milliseconds>(ed - begin).count();	
-		}
-		
-
-		if (stat.empty()) return action();
-
-		auto mx = std::max_element(stat.begin(), stat.end(), [](const std::pair<action::place, float>& a, const std::pair<action::place, float>& b) {
-			return a.second < b.second;
-		});
-		// std::cout << "my action is " << mx->first.position() << ' ' << mx->second->q << ' ' << mx->second->n << '\n';
-		// board tmp = state;
-		// mx->first.apply(tmp);
-		// tmp.show();
-		// std::this_thread::sleep_for(std::chrono::seconds(1));
-		// std::cout << (" BW"[(int)who]) << " -> " << mx->first.position() << '\n';
-		return mx->first;
+		return re;
 	}
 
-private:
-	long long telp = 0;
-	int cnt = 0;
-	board::piece_type who;
-	int T;
-	float c, k;
-	unsigned thread;
-	bool demo;
+	virtual void open_episode(const std::string& flag = "") override { 
+		#ifdef DEMO
+		std::cout << "-------------------\n"; 
+		#endif
+	}
+	virtual void close_episode(const std::string& flag = "") override {
+		/*
+			clear buffers for parellel
+		*/
+		for (auto& buf : bufs) buf.clear();
+		buf_roots.clear();
+		tre.clear();
 
-	std::vector<std::vector<random_player>> sims;
-	// random_player sim[3];
-	std::vector<node*> roots;
+		/*
+			show and clear statistic data
+		*/
+		if (time) {
+			std::cout << move_count << " moves in " << time_elp << " ms\n";
+			std::cout << float(time_elp) / move_count << " ms/move\n";
+			std::cout << float(time_elp) / move_count / T / thread_size << " ms/mcts\n";
+			move_count = 0;
+			time_elp = 0;	
+		}
+		
+		#ifdef DEMO
+		std::cout << "-------------------\n";
+		#endif
+	}
+
+protected:
+	/*
+		parameters in MCTS
+	*/
+	float c = 0.14; // explore rate
+	float k = 10.0; // rave 
+	std::size_t T = 10000; // number of MCTS
 	
-	int round = 1;
+	/*
+		objects in parellel
+	*/
+	std::size_t thread_size = 1;
+	tree tre;
+	std::vector<std::default_random_engine> gens;
+	std::vector<std::vector<node>> bufs;
+	std::vector<node> buf_roots;
+
+	/*
+		statistics
+	*/
+	bool demo = false;
+	bool time = false;
+	int move_count = 0;
+	int time_elp = 0;
 };
