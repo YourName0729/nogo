@@ -16,10 +16,14 @@ public:
 	mcts(const std::string& args = "") : agent("role=unknown " + args + " name=mcts") {
 		assign("thread_size", thread_size);
 		assign("c", c);
-		assign("T", T);
+		// assign("T", T);
 		assign("k", k);
+		assign("reserve", reserve);
+		assign("time", time);
+		assign("c_time", c_time);
+		assign("max_ply", max_ply);
 		if (meta.find("demo") != meta.end()) demo = true;
-		if (meta.find("time") != meta.end()) time = true;
+		if (meta.find("stat_time") != meta.end()) stat_time = true;
 
 
 		/*
@@ -28,13 +32,10 @@ public:
 		gens.resize(thread_size);
 		std::random_device rd;
 		for (auto& gen : gens) gen.seed(rd());
-		// std::generate(gens.begin(), gens.end(), []() {
-		// 	return std::default_random_engine();
-		// });
 
 		bufs.resize(thread_size);
-		for (auto& buf : bufs) buf.reserve(40 * T);
-		buf_roots.reserve(40);
+		for (auto& buf : bufs) buf.reserve(reserve);
+		buf_main.reserve(reserve);
 	}
 
 protected:
@@ -50,15 +51,14 @@ protected:
 			return std::nullopt if all children are visited
 		*/
 		std::optional<node*> expend(std::vector<node>& buf) {
-			#ifdef DEMO
-			std::cout << "expend\n";
-			#endif
 			auto av = available();
 			for (auto i = 0u; i < child.size(); ++i, av = reset(av)) {
 				if (child[i] == nullptr) {
 					board brd = *this;
 					brd.place(lsb(av));
+					// auto sz = buf.capacity();
 					buf.push_back(node(brd));
+					// if (buf.capacity() != sz) std::cout << "cap!" << buf.size() << std::endl;
 					return child[i] = &buf.back();
 				}
 			}
@@ -74,13 +74,6 @@ protected:
 		}
 
 		node* select(float c = 0.1, float k = 10.0) {
-			#ifdef DEMO
-			auto res = std::max_element(child.begin(), child.end(), [&](node* a, node* b) {
-				return a->score(visit, c, k) < b->score(visit, c, k);
-			});
-			std::cout << (info().who_take_turns > 1? "white" : "black");
-			std::cout << "\t" << std::distance(child.begin(), res) << '\t' << (*res)->visit << '\t' << float((*res)->win) / (*res)->visit << '\n';
-			#endif
 			return *std::max_element(child.begin(), child.end(), [&](node* a, node* b) {
 				return a->score(visit, c, k) < b->score(visit, c, k);
 			});
@@ -89,23 +82,33 @@ protected:
 		float score(int par_visit, float c = 0.1, float k = 10.0) const {
 			float exploit = float(win) / visit;
 			float rave_exploit = float(rave_win) / rave_visit;
-			float beta = std::sqrt(k / (par_visit + k));
+			float beta = std::sqrt(k / (3 * visit + k));
 			float explore = std::sqrt(std::log(par_visit) / visit);
 			// return -exploit + c * explore; 
 			return (beta - 1) * exploit - beta * rave_exploit + c * explore;
 		}
 
-		action find_best() const {
-			auto best = std::max_element(child.begin(), child.end(), [](node* a, node* b) {
-				if (a == nullptr) return true;
-				if (b == nullptr) return false;
-				return a->visit < b->visit;
-			});
-			if (best == child.end()) return action();
-			#ifdef DEMO
-			std::cout << bit_scan(find_move(**best)) << ' ' << (*best)->visit << ' ' << float((*best)->win) / (*best)->visit << '\n';
-			#endif
-			return action::place(bit_scan(find_move(**best)), info().who_take_turns);
+		std::optional<action> find_best_order(std::size_t ith, float k = 10.0) const {
+			/*
+				sort the moves from root
+			*/
+			if (child.size() <= ith) return std::nullopt;
+			std::vector<std::pair<int, int>> con;
+			for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 0 : -child[i]->visit, i});
+			// for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 1 : float(child[i]->win) / child[i]->visit, i});
+			// for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 0 : -child[i]->raved_visit(visit, k), i});
+			std::partial_sort(con.begin(), con.begin() + ith, con.end());
+			if (child[con[ith].second] == nullptr) return std::nullopt;
+			return action::place(bit_scan(find_move(*child[con[ith].second])), info().who_take_turns);
+		}
+
+		std::size_t get_index(action mv) const {
+			for (auto i = 0u; i < child.size(); ++i) {
+				board brd = *this;
+				mv.apply(brd);
+				if (brd == static_cast<board>(*child[i])) return i;
+			}
+			return child.size();
 		}
 
 		board::piece_type simulate(std::default_random_engine& gen, rave_array& ra) const {
@@ -114,9 +117,6 @@ protected:
 				ra[brd.info().who_take_turns - 1][*mv] = true;
 				brd.place(*mv);
 			}
-			// #ifdef DEMO
-			// std::cout << (brd.info().who_take_turns == board::white? "black" : "white") << " wins\n";
-			// #endif
 			return brd.info().who_take_turns == board::white? board::black : board::white;
 		}
 
@@ -129,28 +129,66 @@ protected:
 	class tree {
 	public:
 		tree() = default;
-		tree(const board& state) : root(new node(state)) {}
-
-		tree& operator=(const tree& t) { root = t.root; return *this; }
 
 	public:
 		void run_mcts(std::size_t N, std::default_random_engine& gen, std::vector<node>& buf, float c, float k) {
-			#ifdef DEMO
-			std::cout << "run mcts" << '\n';
-			#endif
 			for (auto i = 0u; i < N; ++i) {
+			// while (alive) {
 				auto path{select_expend(buf, c, k)};
 				node::rave_array ra;
 				update(path, path.back()->simulate(gen, ra), ra);
+
+				/*
+					EARLY-C
+				*/
+				if (8 * i > N && i % 100 == 0) {
+					auto mv1 = root->find_best_order(0), mv2 = root->find_best_order(1);
+					if (!mv1 || !mv2) return;
+					auto idx1 = root->get_index(*mv1), idx2 = root->get_index(*mv2);
+					// auto vst1 = root->child[idx1]->raved_visit(root->visit, k), vst2 = root->child[idx2]->raved_visit(root->visit, k);
+					auto vst1 = root->child[idx1]->visit, vst2 = root->child[idx2]->visit;
+					// if (vst2 + (N - i - 1) * 0.4 < vst1) {
+					// 	// std::cout << i << '\n';
+					// 	auto c1 = root->child[idx1], c2 = root->child[idx2];
+					// 	std::cout << vst1 << '\t' << vst2 << '\t' << i << '\n';
+					// 	std::cout << c1->win << '\t' << c2->win << '\n';
+					// 	std::cout << float(c1->win) / vst1 << '\t' << float(c2->win) / vst2 << '\n';
+					// 	std::cout << c1->rave_win << '\t' << c2->rave_win << '\n';
+					// 	std::cout << c1->rave_visit << '\t' << c2->rave_visit << '\n';
+					// 	std::cout << float(c1->rave_win) / c1->rave_visit << '\t' << float(c2->rave_win) / c2->rave_visit << '\n'; 
+					// }
+					if (vst2 + (N - i - 1) * 0.4 < vst1) return;
+					// if (i + 150 >= N - 1) std::cout << vst1 << '\t' << vst2 << '\t' << i << " safe\n";
+				}
 			}
-			// #ifdef DEMO
-			// std::cout << "size: " << size() << '\n';
-			// #endif
-			// return root->find_best();
 		}
 
-		bool empty() const {
-			return root == nullptr;
+		/*
+			in opponent's thinking time, run this
+		*/
+		void run_mcts_after(bool& alive, action mv, std::default_random_engine& gen, std::vector<node>& buf, float c, float k) {
+			/*
+				find the child actioned by mv
+			*/
+			board brd = *root;
+			mv.apply(brd);
+			node* nd = nullptr;
+			for (auto& ch : root->child) {
+				if (ch == nullptr) continue;
+				if (static_cast<board>(*ch) == brd) {
+					nd = ch;
+					break;
+				}
+			}
+
+			/*
+				main loop
+			*/
+			while (alive) {
+				auto path{select_expend(buf, c, k, nd)};
+				node::rave_array ra;
+				update(path, path.back()->simulate(gen, ra), ra);
+			}
 		}
 
 	public:
@@ -159,10 +197,26 @@ protected:
 			root = &buf.back();
 		}
 
+		bool empty() const { return root == nullptr; }
 		void clear() { root = nullptr; }
 
-		bool move(const board& state) {
-			// std::cout << "start move\n";
+	protected:
+		/*
+			move all node instances to buf
+			**ENSURE** buf has reserved enough space
+		*/
+		node* move(node* cur, std::vector<node>& buf) {
+			buf.push_back(*cur);
+			node* ncur = &buf.back();
+			for (auto i = 0u; i < cur->child.size(); ++i) {
+				if (cur->child[i] == nullptr) continue;
+				ncur->child[i] = move(cur->child[i], buf);
+			}
+			return ncur;
+		}
+
+	public:
+		bool move(const board& state, std::vector<node>& buf) {
 			for (auto i = 0u; i < root->child.size(); ++i) {
 				auto ch = root->child[i];
 				if (ch == nullptr) continue;
@@ -170,7 +224,7 @@ protected:
 					auto ch2 = ch->child[j];
 					if (ch2 == nullptr) continue;
 					if (static_cast<board>(*ch2) == state) {
-						root = ch2;
+						root = move(ch2, buf);
 						return true;
 					}
 				}
@@ -179,14 +233,14 @@ protected:
 		}
 
 		// #ifdef DEMO
-		// int size(node* nd) const {
-		// 	int re = 0;
-		// 	for (auto& ch : nd->child) if (ch != nullptr) re += size(ch);
-		// 	return re + 1;
-		// }
-		// int size() const {
-		// 	return size(root);
-		// }
+		int size(node* nd) const {
+			int re = 0;
+			for (auto& ch : nd->child) if (ch != nullptr) re += size(ch);
+			return re + 1;
+		}
+		int size() const {
+			return size(root);
+		}
 		// #endif
 
 		// void plot(node* nd, int sp) {
@@ -198,12 +252,17 @@ protected:
 		// }
 
 	protected:
-		std::vector<node*> select_expend(std::vector<node>& buf, float c = 0.05, float k = 10.0) {
-			#ifdef DEMO
-			std::cout << "select and expend" << '\n';
-			#endif
+		/*
+			assigned_child is a child of root
+			means we only search the subtree rooted from it
+		*/
+		std::vector<node*> select_expend(std::vector<node>& buf, float c = 0.05, float k = 10.0, node* assigned_child = nullptr) {
 			std::vector<node*> path = {root};
 			++root->visit;
+			if (assigned_child != nullptr) {
+				path.push_back(assigned_child);
+				++assigned_child->visit;
+			}
 			while (path.back()->proceedable() && path.back()->fully_visited()) {
 				auto nd = path.back()->select(c, k);
 				path.push_back(nd);
@@ -213,20 +272,13 @@ protected:
 				++nd->visit;
 				++nd->rave_visit;
 			}
-			// #ifdef DEMO
-			// if (auto res = path.back()->expend()) std::cout << "can expend" << '\n';
-			// else std::cout << "can't expend" << '\n';
-			// #endif
-			if (auto res = path.back()->expend(buf)) path.push_back(*res), ++(*res)->visit;
+			if (auto res = path.back()->expend(buf)) path.push_back(*res), ++(*res)->visit, ++(*res)->rave_visit;;
 			// else path.back() is a terminal node
 
 			return path;
 		}
 
 		void update(std::vector<node*>& path, board::piece_type win, node::rave_array& ra) {
-			#ifdef DEMO
-			std::cout << "update" << '\n';
-			#endif
 			auto who = root->info().who_take_turns;
 			for (auto& nd : path) {
 				/*
@@ -243,9 +295,9 @@ protected:
 					if (ch == nullptr) continue;
 					auto chwho = ch->info().who_take_turns;
 					if (ra[chwho - 1][nd->find_move_index(*ch)]) {
-						if (win == who && chwho == who)      ++ch->rave_win;
-						else if (win != who && ndwho != who) ++ch->rave_win;
 						++ch->rave_visit;
+						if (win == who && chwho == who)      ++ch->rave_win;
+						else if (win != who && chwho != who) ++ch->rave_win;
 					}
 				} 
 			}
@@ -263,58 +315,98 @@ protected:
 		return b;
 	}
 
+	void end_after_mcts() {
+		is_thread_alive = false;
+		for (auto& thrs : afters) thrs.join();
+		afters.clear();
+	}
+
 public:
 	action take_action(const board& state) override {
+		/*
+			first record time stamp
+		*/
 		std::chrono::steady_clock::time_point begin;
-		if (time) {
-			begin = std::chrono::steady_clock::now();
-			++move_count;
-		}
+		begin = std::chrono::steady_clock::now();
+		++move_count;
 
-		if (tre.empty()) tre.initialze(state, buf_roots);
-		else if (!tre.move(state)) tre.initialze(state, buf_roots);
+		/*
+			terminate after mcts
+		*/
+		end_after_mcts();
 
+		/*
+			reuse reallocation
+		*/
+		std::vector<node> buf_tmp;
+		buf_tmp.reserve(reserve);
+		if (tre.empty()) tre.initialze(state, buf_tmp);
+		else if (!tre.move(state, buf_tmp)) tre.initialze(state, buf_tmp);
+		buf_main = std::move(buf_tmp);
+		for (auto& buf : bufs) buf.clear();
+		// std::cout << "size = " << tre.size() << '\n';
+
+		/*
+			calculating remaining time (Enhanced) and # of mcts can do
+		*/
+		std::size_t time_rem = time * 1000 - time_elp;
+		// std::cout << "time remaining = " << time_rem / 1000 << '\n';
+		std::size_t T = time_rem / (c_time + std::max(max_ply - move_count, 0)) * mcts_per_ms;
+		// std::cout << "T = " << T << '\n';
+
+		/*
+			generate threads for mcts
+		*/
 		std::vector<std::thread> thrs;
 		for (auto i = 0u; i < thread_size; ++i) {
 			thrs.push_back(std::thread(&tree::run_mcts, tre, T, std::ref(gens[i]), std::ref(bufs[i]), c, k));
 		}
 		for (auto& thr : thrs) thr.join();
-		auto re = tre.root->find_best();
 
-		if (time) {
-			auto end = std::chrono::steady_clock::now();
-			time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+		/*
+			maintain time elp
+		*/
+		auto end = std::chrono::steady_clock::now();
+		time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+
+
+		if (auto re = tre.root->find_best_order(0, k)) {
+			/*
+				generate threads for after mcts
+			*/
+			if (meta.find("skip") != meta.end()) return *re;
+			is_thread_alive = true;
+			for (auto i = 0u; i < thread_size; ++i) {
+				afters.push_back(std::thread(&tree::run_mcts_after, tre, std::ref(is_thread_alive), *re, std::ref(gens[i]), std::ref(bufs[i]), c, k));
+			}
+			return *re;
 		}
-		return re;
+		return action();
 	}
 
-	virtual void open_episode(const std::string& flag = "") override { 
-		#ifdef DEMO
-		std::cout << "-------------------\n"; 
-		#endif
-	}
 	virtual void close_episode(const std::string& flag = "") override {
+		/*
+			after mcts
+		*/
+		end_after_mcts();
+
 		/*
 			clear buffers for parellel
 		*/
 		for (auto& buf : bufs) buf.clear();
-		buf_roots.clear();
+		buf_main.clear();
 		tre.clear();
 
 		/*
 			show and clear statistic data
 		*/
-		if (time) {
+		if (stat_time) {
 			std::cout << move_count << " moves in " << time_elp << " ms\n";
 			std::cout << float(time_elp) / move_count << " ms/move\n";
-			std::cout << float(time_elp) / move_count / T / thread_size << " ms/mcts\n";
-			move_count = 0;
-			time_elp = 0;	
+			// std::cout << float(time_elp) / move_count / T / thread_size << " mcts/ms\n";
 		}
-		
-		#ifdef DEMO
-		std::cout << "-------------------\n";
-		#endif
+		move_count = 0;
+		time_elp = 0;
 	}
 
 protected:
@@ -323,22 +415,37 @@ protected:
 	*/
 	float c = 0.14; // explore rate
 	float k = 10.0; // rave 
-	std::size_t T = 10000; // number of MCTS
+
+	/*
+		time management
+	*/
+	// std::size_t T = 10000; // number of MCTS
+	std::size_t time = 60; // total available time
+	float c_time = 15; // dividing factor on time
+	int max_ply = 15; // the move require most time
+	float mcts_per_ms = 300;
 	
+	/*
+		MCTS tree
+	*/
+	tree tre;
+
 	/*
 		objects in parellel
 	*/
-	std::size_t thread_size = 1;
-	tree tre;
-	std::vector<std::default_random_engine> gens;
-	std::vector<std::vector<node>> bufs;
-	std::vector<node> buf_roots;
+	std::size_t thread_size = 14; // # of thread used
+	bool is_thread_alive = false; // switch to kill while-true thread
+	std::size_t reserve = 4000000; // buffer size aka expected number of mcts per move
+	std::vector<std::default_random_engine> gens; // random generator for each thread
+	std::vector<std::vector<node>> bufs; // node buffer for each thread
+	std::vector<node> buf_main; // node buffer for inherence
+	std::vector<std::thread> afters; // after mcts
 
 	/*
 		statistics
 	*/
 	bool demo = false;
-	bool time = false;
+	bool stat_time = false;
 	int move_count = 0;
 	int time_elp = 0;
 };
