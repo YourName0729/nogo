@@ -48,3 +48,6 @@
 gogui-twogtp-*
 gogui-server-*
 nogo
+weight.txt
+stat.txt
+weight.bin

@@ -18,6 +18,8 @@
 #include <random>
 #include <queue>
 #include <optional>
+#include <unordered_map>
+
 #include "uint128.h"
 
 /**
@@ -84,6 +86,19 @@ public:
 			return std::string(1, x + (x < 8 ? 'A' : 'B')) + std::to_string(y + 1);
 		}
 	};
+
+	piece_type operator()(int x, int y) const {
+		return operator()(x * 9 + y);
+	}
+	piece_type operator()(int i) const {
+		return operator()(shifted(i));
+	}
+	piece_type operator()(uint128 v) const {
+		if (v & brds[1]) return piece_type::black;
+		if (v & brds[2]) return piece_type::white;
+		if (v & hollow_mask) return piece_type::hollow;
+		return piece_type::empty;
+	}
 
 	// operator grid&() { return stone; }
 	// operator const grid&() const { return stone; }
@@ -445,6 +460,7 @@ public:
 	// void rotate_right() { transpose(); reflect_vertical(); } // clockwise
 	// void rotate_left() { transpose(); reflect_horizontal(); } // counterclockwise
 	// void reverse() { reflect_horizontal(); reflect_vertical(); }
+
 public:
 	void show() const {
 		for (unsigned int i = 0; i < size_x; ++i) {
@@ -692,13 +708,15 @@ protected:
 	// 	stone[7][4] = piece_type::hollow;
 	// }
 private:
-	static constexpr bitboard up_mask     = make_uint128(0,0x1ff); // 1 wehn uppest row
-	static constexpr bitboard down_mask   = make_uint128(0x1ff00,0); // 1 when downest row
-	static constexpr bitboard left_mask   = make_uint128(0x100,0x8040201008040201); // 1 when leftest column
-	static constexpr bitboard right_mask  = make_uint128(0x10080,0x4020100804020100); // 1 when rightest column
+	const static constexpr bitboard up_mask     = make_uint128(0,0x1ff); // 1 wehn uppest row
+	const static constexpr bitboard down_mask   = make_uint128(0x1ff00,0); // 1 when downest row
+	const static constexpr bitboard left_mask   = make_uint128(0x100,0x8040201008040201); // 1 when leftest column
+	const static constexpr bitboard right_mask  = make_uint128(0x10080,0x4020100804020100); // 1 when rightest column
 
-	static constexpr bitboard board_mask  = make_uint128(0x1FFF7,0xFBFFF39FFFBFDFFF); // 1 when placable
-	static constexpr bitboard hollow_mask = make_uint128(0x8,0x04000C6000402000); // 1 when hollow
+	const static constexpr bitboard board_mask  = make_uint128(0x1FFF7,0xFBFFF39FFFBFDFFF); // 1 when placable
+	const static constexpr bitboard hollow_mask = make_uint128(0x8,0x04000C6000402000); // 1 when hollow
+
+	// const static constexpr bitboard debrujin    = make_uint128(0x0106143891634793, 0x2A5CD9D3EAD7B77F);
 
 	bitboard brds[3]; // [1]: black, [2]: white
 	bitboard avl[3]; // [1]: black's available moves, [2]: white's available moves

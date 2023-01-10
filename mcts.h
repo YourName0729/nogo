@@ -6,6 +6,9 @@
 #include <thread>
 #include <string_view>
 #include <memory>
+#include <fstream>
+#include <iomanip>
+#include <algorithm>
 
 #include "agent.h"
 
@@ -19,11 +22,16 @@ public:
 		// assign("T", T);
 		assign("k", k);
 		assign("reserve", reserve);
+		assign("reserve_main", reserve_main);
 		assign("time", time);
 		assign("c_time", c_time);
 		assign("max_ply", max_ply);
+		assign("max_ply_mul", max_ply_mul);
 		if (meta.find("demo") != meta.end()) demo = true;
-		if (meta.find("stat_time") != meta.end()) stat_time = true;
+		if (meta.find("stat") != meta.end()) {
+			stat = true;
+			stat_out.open(meta["stat"], std::ios_base::app);
+		}
 
 
 		/*
@@ -35,7 +43,24 @@ public:
 
 		bufs.resize(thread_size);
 		for (auto& buf : bufs) buf.reserve(reserve);
-		buf_main.reserve(reserve);
+		// buf_main.reserve(reserve);
+
+		/*
+			simulation balancing
+		*/
+		// if (meta.find("load") != meta.end()) tre.load_weight(meta["load"]);
+	}
+
+	~mcts() {
+		/*
+			simulation balancing
+		*/
+		// if (meta.find("save") != meta.end()) tre.save_weight(meta["save"]);
+
+		/*
+			stat
+		*/
+		if (meta.find("stat") != meta.end()) stat_out.close();
 	}
 
 protected:
@@ -43,14 +68,13 @@ protected:
 	public:
 		node(const board& state) : board(state), child(bit_count(state.available()), nullptr) {}
 
-		using rave_array = std::array<std::array<bool, 81>, 2>;
-
 	public:
 		/*
 			return the nullptr node to expend 
 			return std::nullopt if all children are visited
 		*/
 		std::optional<node*> expend(std::vector<node>& buf) {
+			if (buf.capacity() == buf.size()) return std::nullopt;
 			auto av = available();
 			for (auto i = 0u; i < child.size(); ++i, av = reset(av)) {
 				if (child[i] == nullptr) {
@@ -94,30 +118,24 @@ protected:
 			*/
 			if (child.size() <= ith) return std::nullopt;
 			std::vector<std::pair<int, int>> con;
-			for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 0 : -child[i]->visit, i});
+			for (auto i = 0u; i < child.size(); ++i) con.push_back({(child[i] == nullptr? 0 : -child[i]->visit), i});
 			// for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 1 : float(child[i]->win) / child[i]->visit, i});
 			// for (auto i = 0u; i < child.size(); ++i) con.push_back({child[i] == nullptr? 0 : -child[i]->raved_visit(visit, k), i});
-			std::partial_sort(con.begin(), con.begin() + ith, con.end());
+			std::partial_sort(con.begin(), con.begin() + ith + 1, con.end());
+			// std::sort(con.begin(), con.end());
 			if (child[con[ith].second] == nullptr) return std::nullopt;
-			return action::place(bit_scan(find_move(*child[con[ith].second])), info().who_take_turns);
+			// std::cout << "fbo " << ith << ' ' << con[ith].first << ' ' << con[ith].second << '\n';
+			return action::place(board::bit_scan(find_move(*child[con[ith].second])), info().who_take_turns);
 		}
 
 		std::size_t get_index(action mv) const {
 			for (auto i = 0u; i < child.size(); ++i) {
+				if (child[i] == nullptr) continue;
 				board brd = *this;
 				mv.apply(brd);
 				if (brd == static_cast<board>(*child[i])) return i;
 			}
 			return child.size();
-		}
-
-		board::piece_type simulate(std::default_random_engine& gen, rave_array& ra) const {
-			board brd = *this;
-			while (auto mv = brd.random_action(gen)) {
-				ra[brd.info().who_take_turns - 1][*mv] = true;
-				brd.place(*mv);
-			}
-			return brd.info().who_take_turns == board::white? board::black : board::white;
 		}
 
 	public:
@@ -130,14 +148,16 @@ protected:
 	public:
 		tree() = default;
 
+		using rave_array = std::array<std::array<bool, 81>, 2>;
+
 	public:
 		void run_mcts(std::size_t N, std::default_random_engine& gen, std::vector<node>& buf, float c, float k) {
 			for (auto i = 0u; i < N; ++i) {
 			// while (alive) {
 				auto path{select_expend(buf, c, k)};
-				node::rave_array ra;
-				update(path, path.back()->simulate(gen, ra), ra);
-
+				rave_array ra;
+				update(path, simulate(*path.back(), gen, ra), ra);
+				// update(path, simulate_weight(*path.back(), gen, ra), ra);
 				/*
 					EARLY-C
 				*/
@@ -147,6 +167,15 @@ protected:
 					auto idx1 = root->get_index(*mv1), idx2 = root->get_index(*mv2);
 					// auto vst1 = root->child[idx1]->raved_visit(root->visit, k), vst2 = root->child[idx2]->raved_visit(root->visit, k);
 					auto vst1 = root->child[idx1]->visit, vst2 = root->child[idx2]->visit;
+					// if (vst2 + (N - i - 1) * 0.5 < vst1) {
+					// 	for (auto i = 0u; i < root->child.size(); ++i) {
+					// 		if (root->child[i] != nullptr) std::cout << root->child[i]->visit << '\n';
+					// 	}
+					// 	std::cout << "vst " << vst1 << ' ' << vst2 << '\n';
+					// 	std::cout << "N-i=" << (N - i - 1) << '\n';
+					// 	std::cout << "----------\n";	
+					// }
+					
 					// if (vst2 + (N - i - 1) * 0.4 < vst1) {
 					// 	// std::cout << i << '\n';
 					// 	auto c1 = root->child[idx1], c2 = root->child[idx2];
@@ -157,7 +186,7 @@ protected:
 					// 	std::cout << c1->rave_visit << '\t' << c2->rave_visit << '\n';
 					// 	std::cout << float(c1->rave_win) / c1->rave_visit << '\t' << float(c2->rave_win) / c2->rave_visit << '\n'; 
 					// }
-					if (vst2 + (N - i - 1) * 0.4 < vst1) return;
+					if (vst2 + (N - i - 1) * 0.5 < vst1) return;
 					// if (i + 150 >= N - 1) std::cout << vst1 << '\t' << vst2 << '\t' << i << " safe\n";
 				}
 			}
@@ -170,24 +199,27 @@ protected:
 			/*
 				find the child actioned by mv
 			*/
-			board brd = *root;
-			mv.apply(brd);
-			node* nd = nullptr;
-			for (auto& ch : root->child) {
-				if (ch == nullptr) continue;
-				if (static_cast<board>(*ch) == brd) {
-					nd = ch;
-					break;
-				}
-			}
+			// board brd = *root;
+			// mv.apply(brd);
+			// node* nd = nullptr;
+			// for (auto& ch : root->child) {
+			// 	if (ch == nullptr) continue;
+			// 	if (static_cast<board>(*ch) == brd) {
+			// 		nd = ch;
+			// 		break;
+			// 	}
+			// }
+			auto nd = root->child[root->get_index(mv)];
 
 			/*
 				main loop
 			*/
 			while (alive) {
 				auto path{select_expend(buf, c, k, nd)};
-				node::rave_array ra;
-				update(path, path.back()->simulate(gen, ra), ra);
+				rave_array ra;
+				// update(path, path.back()->simulate(gen, ra), ra);
+				update(path, simulate(*path.back(), gen, ra), ra);
+				// update(path, simulate_weight(*path.back(), gen, ra), ra);
 			}
 		}
 
@@ -206,11 +238,19 @@ protected:
 			**ENSURE** buf has reserved enough space
 		*/
 		node* move(node* cur, std::vector<node>& buf) {
-			buf.push_back(*cur);
+			buf.push_back(std::move(*cur));
 			node* ncur = &buf.back();
-			for (auto i = 0u; i < cur->child.size(); ++i) {
-				if (cur->child[i] == nullptr) continue;
-				ncur->child[i] = move(cur->child[i], buf);
+			for (auto i = 0u; i < ncur->child.size(); ++i) {
+				if (ncur->child[i] == nullptr) continue;
+				if (buf.capacity() == buf.size()) {
+					/*
+						forget child[i]
+					*/
+					// ncur->visit -= ncur->child[i]->visit;
+					// ncur->win -= (ncur->child[i]->visit - ncur->child[i]->win);
+					ncur->child[i] = nullptr;
+				}
+				else ncur->child[i] = move(ncur->child[i], buf);
 			}
 			return ncur;
 		}
@@ -224,12 +264,33 @@ protected:
 					auto ch2 = ch->child[j];
 					if (ch2 == nullptr) continue;
 					if (static_cast<board>(*ch2) == state) {
+						// auto s = size(ch2);
+						// std::cout << "size1 = " << s << '\n';
+						
 						root = move(ch2, buf);
 						return true;
 					}
 				}
 			}
 			return false;
+		}
+
+		void move_after(action mv, std::vector<node>& buf) {
+			auto idx = root->get_index(mv);
+			buf.push_back(*root);
+			root = &buf.back();
+			for (auto i = 0u; i < root->child.size(); ++i) {
+				if (root->child[i] == nullptr) continue;
+				if (i != idx) {
+					/*
+						forget child[i]
+					*/
+					// root->visit -= root->child[i]->visit;
+					// root->win -= (root->child[i]->visit - root->child[i]->win);
+					root->child[i] = nullptr;
+				} 
+				else root->child[i] = move(root->child[i], buf);
+			}
 		}
 
 		// #ifdef DEMO
@@ -258,10 +319,10 @@ protected:
 		*/
 		std::vector<node*> select_expend(std::vector<node>& buf, float c = 0.05, float k = 10.0, node* assigned_child = nullptr) {
 			std::vector<node*> path = {root};
-			++root->visit;
+			++root->visit, ++root->rave_visit;
 			if (assigned_child != nullptr) {
 				path.push_back(assigned_child);
-				++assigned_child->visit;
+				++assigned_child->visit, ++assigned_child->rave_visit;
 			}
 			while (path.back()->proceedable() && path.back()->fully_visited()) {
 				auto nd = path.back()->select(c, k);
@@ -278,7 +339,7 @@ protected:
 			return path;
 		}
 
-		void update(std::vector<node*>& path, board::piece_type win, node::rave_array& ra) {
+		void update(std::vector<node*>& path, board::piece_type win, rave_array& ra) {
 			auto who = root->info().who_take_turns;
 			for (auto& nd : path) {
 				/*
@@ -303,8 +364,222 @@ protected:
 			}
 		}
 
+		board::piece_type simulate(const board& state, std::default_random_engine& gen, rave_array& ra) const {
+			board brd = state;
+			while (auto mv = brd.random_action(gen)) {
+				ra[brd.info().who_take_turns - 1][*mv] = true;
+				brd.place(*mv);
+			}
+			return brd.info().who_take_turns == board::white? board::black : board::white;
+		}
+
+	/*
+		this part is about weighted simulation
+	*/
+	// public:
+	// 	void load_weight(const std::string& fname) {
+	// 		// std::cout << "load weight\n";
+	// 		std::ifstream fin(fname);
+	// 		if (!fin) throw std::invalid_argument("file not exists");
+	// 		uint64_t size = 0;
+	// 		fin.read(reinterpret_cast<char*>(&size), sizeof(uint64_t));
+	// 		weight.resize(size);
+	// 		fin.read(reinterpret_cast<char*>(weight.data()), sizeof(float) * size);
+	// 		// return out;
+	// 		// float tmp;
+	// 		// while (fin >> tmp) weight.push_back(tmp);
+	// 		fin.close();
+	// 	}
+
+	// 	void save_weight(const std::string& fname) {
+	// 		// std::cout << "save weight\n";
+	// 		std::ofstream fout(fname);
+	// 		if (!fout) throw std::invalid_argument("file not exists");
+	// 		uint64_t size = weight.size();
+	// 		fout.write(reinterpret_cast<const char*>(&size), sizeof(uint64_t));
+	// 		fout.write(reinterpret_cast<const char*>(weight.data()), sizeof(float) * size);
+	// 		// fout << std::fixed << std::setprecision(6);
+	// 		// for (auto& v : weight) fout << v << '\n';
+	// 		fout.close();
+	// 	}
+
+	// 	void run_mcts_balancing(std::size_t N, std::size_t move_count, std::default_random_engine& gen, std::vector<node>& buf, float c, float k, float alpha) {
+	// 		for (auto i = 0u; i < N; ++i) {
+	// 			auto path{select_expend(buf, c, k)};
+	// 			rave_array ra;
+	// 			// std::cout << i << '\t';
+	// 			// std::cout << path.size() << ' ';
+	// 			simulation_balancing(10 * move_count, *path.back(), gen, c, k, alpha);
+	// 			update(path, simulate_weight(*path.back(), gen, ra), ra);
+	// 		}
+	// 	}
+
+	// 	std::optional<int> weight_action(const board& state, std::default_random_engine& gen) const {
+	// 		auto av = state.available(state.info().who_take_turns);
+	// 		if (!av) return std::nullopt;
+	// 		std::vector<std::pair<float, int>> mvs;
+	// 		double sm = 0;
+	// 		for (auto i = 0u; av; ++i, av = reset(av)) {
+	// 			int mv = board::bit_scan(lsb(av));
+	// 			mvs.push_back({std::exp(score(get_weight(state, mv))), mv});
+	// 			sm += mvs.back().first;
+	// 		}
+	// 		auto ch = std::uniform_real_distribution<float>(0, sm)(gen);
+	// 		for (auto i = 0u; i < mvs.size(); ++i) {
+	// 			if (ch < mvs[i].first) return mvs[i].second;
+	// 			ch -= mvs[i].first;
+	// 		}
+	// 		return std::nullopt;
+	// 	}
+
+	// 	board::piece_type simulate_weight(const board& state, std::default_random_engine& gen, rave_array& ra) const {
+	// 		board brd = state;
+	// 		while (auto mv = weight_action(brd, gen)) {
+	// 			ra[brd.info().who_take_turns - 1][*mv] = true;
+	// 			brd.place(*mv);
+	// 		}
+	// 		return brd.info().who_take_turns == board::white? board::black : board::white;
+	// 	}
+
+	// 	/*
+	// 		training the weight
+	// 		1. run mcts on the state M times, calc the win rate V*, assuming the god solution
+	// 		2. run simulation_weight M times, calc the win rate V
+	// 		3. run simulation_weight N times, sum the whole weight, and average, called g
+	// 		4. train the weight by alpha * (V* - V) * g
+
+	// 		that is, if V is overestimated, then decrease g
+	// 		otherwise, if V is underestimated, then increase g
+	// 	*/
+	// 	void simulation_balancing(std::size_t N, const board& state, std::default_random_engine& gen, float c, float k, float alpha = 0.1) {
+	// 		// std::size_t N = 500;
+	// 		/*
+	// 			step 1. calc the V*
+	// 		*/
+	// 		// std::cout << "calc V*\n";
+	// 		if (!state.available()) return;
+	// 		// std::cout << "turn " << int(state.info().who_take_turns) << ' ';
+	// 		tree tre;
+	// 		std::vector<node> buf;
+	// 		buf.reserve(N + 100);
+	// 		tre.initialze(state, buf);
+	// 		tre.run_mcts(N, gen, buf, c, k);
+	// 		float v_star = float(tre.root->win) / tre.root->visit;
+
+	// 		/*
+	// 			step 2 and 3. calc the V and get the current weight vector
+	// 		*/
+	// 		// std::cout << "calc V and g\n";
+	// 		float v = 0;
+	// 		// std::size_t move_count = 0;
+	// 		std::vector<float> cur_weight(weight.size()), opp_weight(weight.size());
+	// 		for (auto i = 0u; i < N; ++i) {
+	// 			board brd = state;
+	// 			while (auto mv = weight_action(brd, gen)) {
+	// 				auto same = brd.info().who_take_turns == state.info().who_take_turns;
+	// 				if (same) for (auto& [code, v] : get_weight(brd, *mv)) cur_weight[code] += v;
+	// 				else      for (auto& [code, v] : get_weight(brd, *mv)) opp_weight[code] += v;
+	// 				// cur_weight[encode(state, *mv)] += 1;
+	// 				// ++move_count;
+	// 				brd.place(*mv);
+	// 			}
+	// 			if (brd.info().who_take_turns != state.info().who_take_turns) v += 1;
+	// 		}
+	// 		v /= N;
+	// 		auto norm = [](const std::vector<float>& vec) {
+	// 			float re = 0;
+	// 			for (auto v : vec) re += v * v;
+	// 			return re;
+	// 		};
+	// 		auto normalize = [](std::vector<float>& vec) {
+	// 			float acc = std::accumulate(vec.begin(), vec.end(), 0.0);
+	// 			// std::cout << acc;
+	// 			for (auto& v : vec) v /= acc;
+	// 			// std::cout << " " << std::accumulate(vec.begin(), vec.end(), 0.0) << '\n';
+	// 		};
+
+	// 		normalize(cur_weight);
+	// 		/*
+	// 			opponent at least one move
+	// 		*/
+	// 		if (norm(opp_weight) > 1e-5) {
+	// 			float nwei = norm(weight);
+	// 			normalize(opp_weight);	
+	// 			for (auto i = 0u; i < weight.size(); ++i) cur_weight[i] += (weight[i] / nwei - opp_weight[i]);
+	// 			for (auto& v : cur_weight) v /= 2.f;
+	// 		}
+
+	// 		/*
+	// 			step 4. train
+	// 		*/
+	// 		// std::cout << "train\n";
+	// 		float sm = 0, mx = 0, v3 = 0;
+	// 		for (auto i = 0u; i < weight.size(); ++i) {
+	// 			v3 += weight[i] * cur_weight[i];
+	// 			weight[i] += alpha * (v_star - v) * cur_weight[i];
+	// 			sm += std::abs(alpha * (v_star - v) * cur_weight[i]);
+	// 			mx = std::max(mx, std::abs(alpha * (v_star - v) * cur_weight[i]));
+	// 		}
+	// 		// std::cout << "train=" << sm << "    \t" << "mx=" << mx << "     \t";
+	// 		std::cout << std::fixed << std::setprecision(5) << "V*=" << v_star << " V=" << v << " V3= " << v3 <<'\n';
+	// 	}
+
+	// protected:
+	// 	std::vector<std::pair<std::size_t, float>> get_weight(const board& state, int mv) const {
+	// 		auto get_weight_single = [&](const board& state, int mv) {
+	// 			std::vector<std::pair<std::size_t, float>> re;
+	// 			int x = mv / 9, y = mv % 9;
+	// 			for (auto i = -1; i <= 1; ++i) {
+	// 				for (auto j = -1; j <= 1; ++j) {
+	// 					// if (i == j && i == 0) continue;
+	// 					int nx = x + i, ny = y + j, idx = nx * 9 + ny;
+	// 					if (nx < 0 || ny < 0 || nx >= 9 || ny >= 9) continue;
+	// 					auto p = state(nx, ny);
+	// 					if (p == state.info().who_take_turns) re.push_back({encode(state, idx), 1});
+	// 					else if (p == 3 - state.info().who_take_turns) re.push_back({encode(state, idx), -1});
+	// 				}
+	// 			}
+	// 			return re;
+	// 		};
+
+	// 		auto org = get_weight_single(state, mv);
+	// 		board brd = state;
+	// 		brd.place(mv);
+	// 		auto cur = get_weight_single(brd, mv);
+	// 		std::vector<std::pair<std::size_t, float>> re;
+	// 		for (auto& [code, v] : org) re.push_back({code, -v});
+	// 		for (auto& [code, v] : cur) re.push_back({code, -v});
+	// 		return re;
+	// 	}
+
+	// 	float score(const std::vector<std::pair<std::size_t, float>>& wei) const {
+	// 		float re = 0;
+	// 		for (auto& [code, v] : wei) re += v * weight[code];
+	// 		return re;
+	// 	}
+
+	// 	std::size_t encode(const board& state, int mv) const {
+	// 		std::size_t re = 0;
+	// 		int x = mv / 9, y = mv % 9;
+	// 		for (auto i = -1; i <= 1; ++i) {
+	// 			for (auto j = -1; j <= 1; ++j) {
+	// 				if (i == j && i == 0) continue;
+	// 				int nx = x + i, ny = y + j;
+	// 				if (nx < 0 || ny < 0 || nx >= 9 || ny >= 9) continue;
+	// 				auto p = state(nx, ny);
+	// 				re <<= 2;
+	// 				if (p == board::piece_type::hollow) continue;
+	// 				if (p == board::piece_type::empty) re += 3;
+	// 				else if (p == state.info().who_take_turns) re += 1;
+	// 				else re += 2;
+	// 			}
+	// 		}
+	// 		return re;
+	// 	}
+
 	public:
 		node* root = nullptr;
+		// std::vector<float> weight;
 	};
 
 protected:
@@ -321,8 +596,38 @@ protected:
 		afters.clear();
 	}
 
+	void reallocate(const board& state) {
+		// std::cout << "reallocation\n";
+		std::vector<node> buf_tmp;
+		buf_tmp.reserve(reserve_main);
+		if (tre.empty()) tre.initialze(state, buf_tmp);
+		else if (!tre.move(state, buf_tmp)) tre.initialze(state, buf_tmp);
+		buf_main = std::move(buf_tmp);
+		for (auto& buf : bufs) buf.clear();
+		// std::cout << "size = " << tre.size() << '\n';
+	}
+
+	void reallocate_after(action mv) {
+		std::vector<node> buf_tmp;
+		buf_tmp.reserve(reserve_main);
+		tre.move_after(mv, buf_tmp);
+		buf_main = std::move(buf_tmp);
+		for (auto& buf : bufs) buf.clear();
+	}
+
+	void update_time(std::chrono::steady_clock::time_point& begin) {
+		auto end = std::chrono::steady_clock::now();
+		time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+	}
+
 public:
 	action take_action(const board& state) override {
+		if (stat) {
+			if (move_count == 0) 
+				stat_out << "======== New Game ========\n";
+			stat_out << "------ move " << move_count << " ------\n";
+		}
+
 		/*
 			first record time stamp
 		*/
@@ -331,28 +636,60 @@ public:
 		++move_count;
 
 		/*
+			simulation balancing
+		*/
+		// if (meta.find("balancing") != meta.end()) {
+		// 	std::cout << "balancing action\n";
+		// 	float alpha = 0.1;
+		// 	assign("alpha", alpha);
+		// 	buf_main.clear();
+		// 	tre.initialze(state, buf_main);
+		// 	tre.run_mcts_balancing(500, move_count, gens[0], buf_main, c, k, alpha);
+		// 	/*
+		// 		maintain time elp
+		// 	*/
+		// 	auto end = std::chrono::steady_clock::now();
+		// 	time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+
+		// 	if (meta.find("save") != meta.end()) tre.save_weight(meta["save"]);
+
+		// 	if (auto mv = tre.root->find_best_order(0)) return *mv;
+		// 	return action();
+		// }
+
+		/*
 			terminate after mcts
 		*/
 		end_after_mcts();
+		// if (stat) {
+		// 	// stat_out << "after:\n";
+		// 	// stat_out << "main: " << buf_main.size() << '\n';
+		// 	auto mx = bufs[0].size();
+		// 	for (auto i = 0u; i < thread_size; ++i) {
+		// 		mx = std::max(mx, bufs[i].size());
+		// 		// stat_out << "thr " << i << ": " << bufs[i].size() << '\n';
+		// 	}
+		// 	stat_out << "after: " << buf_main.size() << ' ' << mx << std::endl;
+		// }
 
 		/*
 			reuse reallocation
 		*/
-		std::vector<node> buf_tmp;
-		buf_tmp.reserve(reserve);
-		if (tre.empty()) tre.initialze(state, buf_tmp);
-		else if (!tre.move(state, buf_tmp)) tre.initialze(state, buf_tmp);
-		buf_main = std::move(buf_tmp);
-		for (auto& buf : bufs) buf.clear();
-		// std::cout << "size = " << tre.size() << '\n';
+		reallocate(state);
+		
 
 		/*
 			calculating remaining time (Enhanced) and # of mcts can do
 		*/
 		std::size_t time_rem = time * 1000 - time_elp;
 		// std::cout << "time remaining = " << time_rem / 1000 << '\n';
-		std::size_t T = time_rem / (c_time + std::max(max_ply - move_count, 0)) * mcts_per_ms;
+		std::size_t T = time_rem / (c_time + max_ply_mul * std::max(max_ply - move_count, 0)) * mcts_per_ms;
 		// std::cout << "T = " << T << '\n';
+		// T=100;
+		if (stat) {
+			stat_out << "T       : " << T << std::endl;
+			stat_out << "Time    : " << time_rem / 1000 << std::endl;
+		}
 
 		/*
 			generate threads for mcts
@@ -363,24 +700,58 @@ public:
 		}
 		for (auto& thr : thrs) thr.join();
 
-		/*
-			maintain time elp
-		*/
-		auto end = std::chrono::steady_clock::now();
-		time_elp += std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
-
+		// if (stat) {
+		// 	// stat_out << "main: " << buf_main.size() << '\n';
+		// 	// for (auto i = 0u; i < thread_size; ++i) {
+		// 	// 	stat_out << "thr " << i << ": " << bufs[i].size() << '\n';
+		// 	// }
+		// 	auto mx = bufs[0].size();
+		// 	for (auto i = 0u; i < thread_size; ++i) {
+		// 		mx = std::max(mx, bufs[i].size());
+		// 		// stat_out << "thr " << i << ": " << bufs[i].size() << '\n';
+		// 	}
+		// 	stat_out << "mcts: " << buf_main.size() << ' ' << mx << std::endl;
+		// }
+		
 
 		if (auto re = tre.root->find_best_order(0, k)) {
+			if (meta.find("skip") != meta.end()) {
+				update_time(begin);
+				return *re;
+			}
+
+			if (stat) {
+				auto nd = tre.root->child[tre.root->get_index(*re)];
+				stat_out << "win rate: " << 1.0 - float(nd->win) / nd->visit << std::endl;
+			}
+
+			// if (stat) {
+			// 	auto& r = tre.root;
+			// 	auto v1 = r->child[r->get_index(*r->find_best_order(0))]->visit;
+			// 	auto v2 = r->child[r->get_index(*r->find_best_order(1))]->visit;
+			// 	stat_out << v1 << ' ' << v2 << std::endl;
+			// }
+			
+			/*
+				reuse preallocation for after
+			*/
+			reallocate_after(*re);
+
 			/*
 				generate threads for after mcts
 			*/
-			if (meta.find("skip") != meta.end()) return *re;
 			is_thread_alive = true;
 			for (auto i = 0u; i < thread_size; ++i) {
 				afters.push_back(std::thread(&tree::run_mcts_after, tre, std::ref(is_thread_alive), *re, std::ref(gens[i]), std::ref(bufs[i]), c, k));
 			}
+
+			/*
+				calc time elp
+			*/
+			update_time(begin);
 			return *re;
 		}
+		update_time(begin);
 		return action();
 	}
 
@@ -400,9 +771,9 @@ public:
 		/*
 			show and clear statistic data
 		*/
-		if (stat_time) {
-			std::cout << move_count << " moves in " << time_elp << " ms\n";
-			std::cout << float(time_elp) / move_count << " ms/move\n";
+		if (stat && move_count) {
+			stat_out << move_count << " moves in " << time_elp << " ms\n";
+			stat_out << float(time_elp) / move_count << " ms/move\n";
 			// std::cout << float(time_elp) / move_count / T / thread_size << " mcts/ms\n";
 		}
 		move_count = 0;
@@ -420,10 +791,12 @@ protected:
 		time management
 	*/
 	// std::size_t T = 10000; // number of MCTS
-	std::size_t time = 60; // total available time
-	float c_time = 15; // dividing factor on time
-	int max_ply = 15; // the move require most time
-	float mcts_per_ms = 300;
+	float time = 60; // total available time
+	float c_time = 10; // dividing factor on time
+	float max_ply_mul = 1.3;
+	int max_ply = 14; // the move require most time
+	float mcts_per_ms = 210;
+	// float mcts_per_ms = 3;
 	
 	/*
 		MCTS tree
@@ -435,7 +808,8 @@ protected:
 	*/
 	std::size_t thread_size = 14; // # of thread used
 	bool is_thread_alive = false; // switch to kill while-true thread
-	std::size_t reserve = 4000000; // buffer size aka expected number of mcts per move
+	std::size_t reserve = 2000000; // buffer size aka expected number of mcts per move
+	std::size_t reserve_main = 15000000;
 	std::vector<std::default_random_engine> gens; // random generator for each thread
 	std::vector<std::vector<node>> bufs; // node buffer for each thread
 	std::vector<node> buf_main; // node buffer for inherence
@@ -445,7 +819,8 @@ protected:
 		statistics
 	*/
 	bool demo = false;
-	bool stat_time = false;
+	bool stat = false;
 	int move_count = 0;
 	int time_elp = 0;
+	std::ofstream stat_out;
 };
